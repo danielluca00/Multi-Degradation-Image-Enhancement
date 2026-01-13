@@ -1,6 +1,10 @@
 # Created by https://www.toptal.com/developers/gitignore/api/python
 # Edit at https://www.toptal.com/developers/gitignore?templates=python
 
+# Outputs & weights (non versionare)
+outputs/
+weights/
+
 # Output images and saved models folder
 output_images/
 saved_models/

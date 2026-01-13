@@ -1,0 +1,115 @@
+{
+  "name": "low_light",
+  "task": "low_light",
+
+  "model": {
+    "which_model": {
+      "name": ["models.model", "Model"],
+      "args": {}
+    },
+    "networks": [
+      {
+        "name": ["models.cdan", "CDAN"],
+        "args": {}
+      }
+    ]
+  },
+
+  "loss": {
+    "lambda_mse": 1.0,
+    "lambda_vgg": 0.25,
+    "vgg_layers": 20,
+    "lambda_ssim": 0.5,
+    "lambda_lpips": 0.5,
+    "lpips_net": "alex"
+  },
+
+  "post_processing": {
+    "enabled": true,
+    "ops": [
+      { "name": "enhance_contrast", "args": { "contrast_factor": 1.03 } },
+      { "name": "enhance_color", "args": { "saturation_factor": 1.55 } }
+    ]
+  },
+
+  "save_outputs": {
+    "enabled": true,
+    "output_dir": "outputs/low_light/",
+    "resize_hw": [400, 600],
+    "max_images": 200,
+    "format": "png",
+    "prefix": "output_"
+  },
+
+  "train": {
+    "device": "cuda",
+    "n_epoch": 80,
+    "lr": 0.001,
+
+    "dataset": {
+      "name": ["data.dataset", "PairedDataset"],
+      "args": {
+        "input_root": "../LOLdataset/train/low",
+        "target_root": "../LOLdataset/train/high",
+        "pairing_mode": "filename",
+        "transform": {
+          "backend": "albumentations",
+          "ops": [
+            { "name": "Resize", "args": { "height": 400, "width": 600 } },
+
+            { "name": "HorizontalFlip", "args": { "p": 0.5 } },
+            { "name": "RandomBrightnessContrast", "args": { "brightness_limit": 0.2, "contrast_limit": 0.2, "p": 0.5 } },
+
+            { "name": "Normalize", "args": { "mean": [0.0, 0.0, 0.0], "std": [1.0, 1.0, 1.0] } },
+            { "name": "ToTensorV2", "args": {} }
+          ]
+        }
+      }
+    },
+
+    "dataloader": {
+      "args": {
+        "batch_size": 16,
+        "shuffle": true,
+        "num_workers": 4
+      }
+    },
+
+    "model_path": "weights/",
+    "model_name": "CDAN_low_light.pt"
+  },
+
+  "test": {
+    "device": "cuda",
+
+    "dataset": {
+      "name": ["data.dataset", "PairedDataset"],
+      "args": {
+        "input_root": "../LOLdataset/test/low",
+        "target_root": "../LOLdataset/test/high",
+        "pairing_mode": "filename",
+        "transform": {
+          "backend": "albumentations",
+          "ops": [
+            { "name": "Resize", "args": { "height": 400, "width": 600 } },
+            { "name": "Normalize", "args": { "mean": [0.0, 0.0, 0.0], "std": [1.0, 1.0, 1.0] } },
+            { "name": "ToTensorV2", "args": {} }
+          ]
+        }
+      },
+      "is_paired": true
+    },
+
+    "dataloader": {
+      "args": {
+        "batch_size": 16,
+        "shuffle": false,
+        "num_workers": 4
+      }
+    },
+
+    "model_path": "weights/",
+    "model_name": "CDAN_low_light.pt",
+    "output_images_path": "outputs/low_light/"
+  }
+}
