@@ -55,7 +55,7 @@
         "transform": {
           "backend": "albumentations",
           "ops": [
-            { "name": "Resize", "args": { "height": 400, "width": 600 } },
+            { "name": "Resize", "args": { "height": 256, "width": 384 } },
 
             { "name": "HorizontalFlip", "args": { "p": 0.5 } },
             { "name": "RandomBrightnessContrast", "args": { "brightness_limit": 0.2, "contrast_limit": 0.2, "p": 0.5 } },
@@ -91,7 +91,7 @@
         "transform": {
           "backend": "albumentations",
           "ops": [
-            { "name": "Resize", "args": { "height": 400, "width": 600 } },
+            { "name": "Resize", "args": { "height": 256, "width": 384 } },
             { "name": "Normalize", "args": { "mean": [0.0, 0.0, 0.0], "std": [1.0, 1.0, 1.0] } },
             { "name": "ToTensorV2", "args": {} }
           ]
