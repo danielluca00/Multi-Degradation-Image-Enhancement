@@ -16,12 +16,27 @@
   },
 
   "loss": {
-    "lambda_mse": 1.0,
-    "lambda_vgg": 0.25,
-    "vgg_layers": 20,
-    "lambda_ssim": 0.5,
-    "lambda_lpips": 0.5,
-    "lpips_net": "alex"
+    "enabled": true,
+    "terms": [
+      { "name": "mse", "weight": 1.0 },
+      { "name": "vgg_perceptual", "weight": 0.25, "args": { "layers": 20 } },
+      { "name": "ssim", "weight": 0.5 },
+      { "name": "lpips", "weight": 0.5, "args": { "net": "alex" } }
+    ]
+  },
+
+  "metrics": {
+    "enabled": true,
+    "items": [
+      { "name": "psnr" },
+      { "name": "ssim" },
+      { "name": "lpips", "args": { "net": "alex" } }
+    ]
+  },
+
+  "evaluation": {
+    "raw": true,
+    "postprocessed": true
   },
 
   "post_processing": {
@@ -38,7 +53,12 @@
     "resize_hw": [400, 600],
     "max_images": 200,
     "format": "png",
-    "prefix": "output_"
+
+    "save_raw": true,
+    "save_postprocessed": true,
+
+    "raw_prefix": "raw_",
+    "post_prefix": "pp_"
   },
 
   "train": {
