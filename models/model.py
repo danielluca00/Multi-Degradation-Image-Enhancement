@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import time
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -16,7 +18,6 @@ from torchvision.transforms import functional as TF
 
 from models.base import BaseModel
 from utils.postprocessing_factory import apply_postprocessing
-
 from utils.loss_factory import build_loss_pipeline
 from utils.metrics_factory import build_metrics_pipeline
 
@@ -32,7 +33,6 @@ class Model(BaseModel):
         # ---- Loss + Metrics from config (fully configurable) ----
         self.loss_cfg = self.config.get("loss", {})
         self.metrics_cfg = self.config.get("metrics", {"enabled": False})
-
         self.loss_pipe = build_loss_pipeline(self.loss_cfg, device=self.device)
         self.metrics_pipe = build_metrics_pipeline(self.metrics_cfg, device=self.device)
 
@@ -44,19 +44,28 @@ class Model(BaseModel):
         if "output_dir" not in self.save_cfg:
             self.save_cfg["output_dir"] = self.output_images_path
 
-        # saving controls for raw vs postprocessed
-        # defaults: if postproc enabled, save postprocessed; raw optional
         self.save_cfg.setdefault("save_raw", False)
         self.save_cfg.setdefault("save_postprocessed", True)
-
         self.save_cfg.setdefault("raw_prefix", "raw_")
         self.save_cfg.setdefault("post_prefix", self.save_cfg.get("prefix", "output_"))
 
         # ---- Evaluation controls: compute on raw and/or postprocessed ----
-        # default: if postproc enabled, compute both; else raw only
         eval_cfg = self.config.get("evaluation", {})
         self.eval_on_raw = bool(eval_cfg.get("raw", True))
         self.eval_on_post = bool(eval_cfg.get("postprocessed", bool(self.postproc_cfg.get("enabled", False))))
+
+        # ---- Logging cfg ----
+        log_cfg = self.config.get("logging", {}) or {}
+        self.logging_enabled = bool(log_cfg.get("enabled", False))
+        self.train_log_every = int((log_cfg.get("train", {}) or {}).get("log_every_n_batches", 0) or 0)
+
+        # ---- Checkpoints cfg ----
+        ckpt_cfg = log_cfg.get("checkpoints", {}) or {}
+        self.ckpt_enabled = bool(ckpt_cfg.get("enabled", False))
+        self.ckpt_every = int(ckpt_cfg.get("every_n_epochs", 10))
+
+        # best tracking
+        self.best_loss = float("inf")
 
     def _save_batch_outputs(self, outputs: torch.Tensor, start_index: int, prefix: str):
         if not self.save_cfg.get("enabled", True):
@@ -86,30 +95,70 @@ class Model(BaseModel):
             return {k: float("nan") for k in sum_dict.keys()}
         return {k: v / denom for k, v in sum_dict.items()}
 
+    def _maybe_save_epoch_checkpoint(self, epoch_idx_0based: int):
+        """
+        Saves an extra checkpoint (optional) into the run directory:
+        runs/<task>/<timestamp>/checkpoints/epoch_XX.pt
+        """
+        if not (self.logging_enabled and self.ckpt_enabled and self.logger is not None):
+            return
+        if self.ckpt_every <= 0:
+            return
+        epoch_num = epoch_idx_0based + 1
+        if epoch_num % self.ckpt_every != 0:
+            return
+
+        run_dir = getattr(self.logger, "run_dir", lambda: None)()
+        if not run_dir:
+            return
+
+        ckpt_dir = os.path.join(run_dir, "checkpoints")
+        os.makedirs(ckpt_dir, exist_ok=True)
+        ckpt_path = os.path.join(ckpt_dir, f"epoch_{epoch_num:03d}.pt")
+        torch.save(self.network.state_dict(), ckpt_path)
+
+    def _maybe_copy_best_to_run_dir(self):
+        """
+        Optional convenience: copy best weights file into run dir as best.pt
+        (only if logger is enabled and run_dir exists).
+        """
+        if not (self.logging_enabled and self.logger is not None):
+            return
+        run_dir = getattr(self.logger, "run_dir", lambda: None)()
+        if not run_dir:
+            return
+        src = os.path.join(self.model_path, self.model_name)
+        if os.path.isfile(src):
+            dst = os.path.join(run_dir, "best.pt")
+            try:
+                shutil.copyfile(src, dst)
+            except Exception:
+                pass
+
     def train_step(self):
-        best_loss = float("inf")
         self.network.to(self.device)
 
         for epoch in range(self.epoch):
+            t0 = time.time()
+
             self.network.train()
             epoch_total = 0.0
             comp_sums: Dict[str, float] = {}
 
-            dataloader_iter = tqdm(self.dataloader, desc=f"Training... Epoch: {epoch+1}/{self.epoch}", total=len(self.dataloader))
+            dataloader_iter = tqdm(
+                enumerate(self.dataloader),
+                desc=f"Training... Epoch: {epoch+1}/{self.epoch}",
+                total=len(self.dataloader),
+            )
 
-            for inputs, targets in dataloader_iter:
+            for step, batch in dataloader_iter:
+                inputs, targets = batch
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 self.optimizer.zero_grad()
 
                 with autocast():
                     outputs = self.network(inputs)
-
-                    loss_dict = self.loss_pipe(
-                        outputs=outputs,
-                        targets=targets,
-                        inputs=inputs,
-                        is_paired=True,
-                    )
+                    loss_dict = self.loss_pipe(outputs=outputs, targets=targets, inputs=inputs, is_paired=True)
                     loss = loss_dict["total"]
 
                 self.scaler.scale(loss).backward()
@@ -122,16 +171,60 @@ class Model(BaseModel):
 
                 dataloader_iter.set_postfix({"loss": float(loss.item())})
 
-            epoch_loss = epoch_total / max(1, len(self.dataloader))
-            avg_comps = self._summarize_epoch_components(comp_sums, max(1, len(self.dataloader)))
+                # ---- optional batch-level logging ----
+                if self.logging_enabled and self.logger is not None and self.train_log_every > 0:
+                    if (step + 1) % self.train_log_every == 0:
+                        row = {
+                            "type": "batch",
+                            "epoch": epoch + 1,
+                            "step": step + 1,
+                        }
+                        # log total + components (current batch)
+                        for k, v in loss_dict.items():
+                            row[f"loss_{k}"] = float(v.item())
+                        self.logger.log_train(row)
 
-            if epoch_loss < best_loss:
-                best_loss = epoch_loss
+            denom = max(1, len(self.dataloader))
+            avg_comps = self._summarize_epoch_components(comp_sums, denom)
+            epoch_loss = float(avg_comps.get("total", epoch_total / denom))
+
+            # ---- best model ----
+            if epoch_loss < self.best_loss:
+                self.best_loss = epoch_loss
                 self.save_model(self.network)
+                self._maybe_copy_best_to_run_dir()
 
-            # stampa compatta: total + componenti principali
+            # ---- epoch-level logging ----
+            if self.logging_enabled and self.logger is not None:
+                epoch_time = time.time() - t0
+                row = {
+                    "type": "epoch",
+                    "epoch": epoch + 1,
+                    "epoch_time_sec": float(epoch_time),
+                    "lr": float(self.lr),
+                    "best_loss_so_far": float(self.best_loss),
+                }
+                for k, v in avg_comps.items():
+                    row[f"loss_{k}"] = float(v)
+                self.logger.log_train(row)
+
+                # update summary incrementally
+                self.logger.set_summary({
+                    "best_train_loss": float(self.best_loss),
+                    "epochs_completed": int(epoch + 1),
+                })
+
+            # ---- optional periodic checkpoints ----
+            self._maybe_save_epoch_checkpoint(epoch_idx_0based=epoch)
+
+            # console print
             comps_str = ", ".join([f"{k}: {avg_comps[k]:.4f}" for k in avg_comps.keys() if k != "total"])
-            print(f"Epoch [{epoch+1}/{self.epoch}] Train total: {avg_comps.get('total', epoch_loss):.4f}" + (f" | {comps_str}" if comps_str else ""))
+            print(
+                f"Epoch [{epoch+1}/{self.epoch}] "
+                f"Train total: {avg_comps.get('total', epoch_loss):.4f}"
+                + (f" | {comps_str}" if comps_str else "")
+                + f" | best: {self.best_loss:.4f}"
+            )
 
     def test_step(self):
         path = os.path.join(self.model_path, self.model_name)
@@ -185,7 +278,6 @@ class Model(BaseModel):
                             self._save_batch_outputs(raw_outputs, start_index=out_counter, prefix=self.save_cfg.get("raw_prefix", "raw_"))
 
                         if self.save_cfg.get("save_postprocessed", True):
-                            # if postproc disabled, pp_outputs == raw_outputs
                             self._save_batch_outputs(pp_outputs, start_index=out_counter, prefix=self.save_cfg.get("post_prefix", "output_"))
 
                     out_counter += raw_outputs.shape[0]
@@ -196,11 +288,14 @@ class Model(BaseModel):
 
                 denom = max(1, n_batches)
 
+                pre_loss_avg = {k: v / denom for k, v in pre_loss_sums.items()}
+                pre_met_avg = {k: v / denom for k, v in pre_metric_sums.items()}
+
+                post_loss_avg = {k: v / denom for k, v in post_loss_sums.items()}
+                post_met_avg = {k: v / denom for k, v in post_metric_sums.items()}
+
                 # stampa PRE
                 if self.eval_on_raw:
-                    pre_loss_avg = {k: v / denom for k, v in pre_loss_sums.items()}
-                    pre_met_avg = {k: v / denom for k, v in pre_metric_sums.items()}
-
                     loss_str = ", ".join([f"{k}: {pre_loss_avg[k]:.4f}" for k in pre_loss_avg.keys()])
                     met_str = ", ".join([f"{k}: {pre_met_avg[k]:.4f}" for k in pre_met_avg.keys()])
                     print(f"[PRE]  Losses -> {loss_str}")
@@ -209,14 +304,36 @@ class Model(BaseModel):
 
                 # stampa POST
                 if self.eval_on_post and self.postproc_cfg.get("enabled", False):
-                    post_loss_avg = {k: v / denom for k, v in post_loss_sums.items()}
-                    post_met_avg = {k: v / denom for k, v in post_metric_sums.items()}
-
                     loss_str = ", ".join([f"{k}: {post_loss_avg[k]:.4f}" for k in post_loss_avg.keys()])
                     met_str = ", ".join([f"{k}: {post_met_avg[k]:.4f}" for k in post_met_avg.keys()])
                     print(f"[POST] Losses -> {loss_str}")
                     if met_str:
                         print(f"[POST] Metrics -> {met_str}")
+
+                # ---- logging test rows ----
+                if self.logging_enabled and self.logger is not None:
+                    if self.eval_on_raw:
+                        row = {"type": "test", "stage": "pre", "batches": int(n_batches)}
+                        for k, v in pre_loss_avg.items():
+                            row[f"loss_{k}"] = float(v)
+                        for k, v in pre_met_avg.items():
+                            row[f"metric_{k}"] = float(v)
+                        self.logger.log_test(row)
+
+                    if self.eval_on_post and self.postproc_cfg.get("enabled", False):
+                        row = {"type": "test", "stage": "post", "batches": int(n_batches)}
+                        for k, v in post_loss_avg.items():
+                            row[f"loss_{k}"] = float(v)
+                        for k, v in post_met_avg.items():
+                            row[f"metric_{k}"] = float(v)
+                        self.logger.log_test(row)
+
+                    # update summary
+                    self.logger.set_summary({
+                        "best_train_loss": float(self.best_loss),
+                        "test_batches": int(n_batches),
+                        "post_processing_enabled": bool(self.postproc_cfg.get("enabled", False)),
+                    })
 
             else:
                 # unpaired test: only outputs available
@@ -236,3 +353,11 @@ class Model(BaseModel):
 
                     if max_save is not None and out_counter >= max_save:
                         break
+
+                if self.logging_enabled and self.logger is not None:
+                    self.logger.log_test({"type": "test", "stage": "unpaired", "batches": int(n_batches)})
+                    self.logger.set_summary({
+                        "best_train_loss": float(self.best_loss),
+                        "test_batches": int(n_batches),
+                        "post_processing_enabled": bool(self.postproc_cfg.get("enabled", False)),
+                    })

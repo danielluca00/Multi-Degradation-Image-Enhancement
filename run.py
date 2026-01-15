@@ -2,33 +2,52 @@ import argparse
 
 from utils.parser import create_model, define_dataloader, define_network, define_dataset, parse
 from utils.reproducibility import set_seed_and_cudnn
+from utils.logger import ExperimentLogger
 
 
 def main(config):
     set_seed_and_cudnn()
 
-    phase = config['phase']
-    dataset = define_dataset(config[phase]['dataset'])
-    dataloader = define_dataloader(dataset, config[phase]['dataloader']['args'])
-    network = define_network(config['model']['networks'][0])
+    logger = ExperimentLogger(config)
 
-    model = create_model(config=config,
-                         network=network,
-                         dataloader=dataloader
-                        )
+    phase = config["phase"]
+    dataset = define_dataset(config[phase]["dataset"])
+    dataloader = define_dataloader(dataset, config[phase]["dataloader"]["args"])
+    network = define_network(config["model"]["networks"][0])
 
-    if phase == 'train':
+    model = create_model(
+        config=config,
+        network=network,
+        dataloader=dataloader,
+        logger=logger,
+    )
+
+    if phase == "train":
         model.train()
     else:
         model.test()
 
+    logger.close()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, default='config/default.json', help='Path to the JSON configuration file')
-    parser.add_argument('-p', '--phase', type=str, choices=['train', 'test'], help='Phase to run (train or test)', default='train')
+    parser.add_argument(
+        "-c",
+        "--config",
+        type=str,
+        default="config/default.json",
+        help="Path to the JSON configuration file",
+    )
+    parser.add_argument(
+        "-p",
+        "--phase",
+        type=str,
+        choices=["train", "test"],
+        help="Phase to run (train or test)",
+        default="train",
+    )
 
-    # parser configs
     args = parser.parse_args()
     config = parse(args)
 

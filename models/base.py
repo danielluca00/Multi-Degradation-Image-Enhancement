@@ -9,7 +9,7 @@ import torch
 
 
 class BaseModel:
-    def __init__(self, config, dataloader):
+    def __init__(self, config, dataloader, logger=None):
         self.config = config
         self.phase = config["phase"]
 
@@ -29,6 +29,9 @@ class BaseModel:
 
         # backward compatible field
         self.output_images_path = test_cfg.get("output_images_path", "outputs/")
+
+        # logger (can be None)
+        self.logger = logger
 
     def train(self):
         since = time.time()

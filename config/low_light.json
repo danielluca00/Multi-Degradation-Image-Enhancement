@@ -61,6 +61,28 @@
     "post_prefix": "pp_"
   },
 
+  "logging": {
+    "enabled": true,
+    "root_dir": "runs",
+    "save_config_copy": true,
+
+    "train": {
+      "log_every_n_batches": 50,
+      "save_csv": true,
+      "save_jsonl": true
+    },
+
+    "test": {
+      "save_csv": true,
+      "save_jsonl": true
+    },
+
+    "checkpoints": {
+      "enabled": false,
+      "every_n_epochs": 10
+    }
+  },
+
   "train": {
     "device": "cuda",
     "n_epoch": 80,
