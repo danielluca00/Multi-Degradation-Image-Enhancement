@@ -30,7 +30,6 @@ class BaseModel:
         # backward compatible field
         self.output_images_path = test_cfg.get("output_images_path", "outputs/")
 
-        # logger (can be None)
         self.logger = logger
 
     def train(self):

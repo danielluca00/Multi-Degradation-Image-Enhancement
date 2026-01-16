@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from utils.plotting import plot_losses_from_csv
+
 
 def _now_stamp() -> str:
     return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -35,6 +37,7 @@ class ExperimentLogger:
       - test.csv / test.jsonl
       - summary.json
       - optional config.json copy
+    Also can generate plots automatically from train.csv.
     """
     def __init__(self, config: Dict[str, Any]):
         self.cfg = (config.get("logging", {}) or {})
@@ -77,7 +80,7 @@ class ExperimentLogger:
         self._summary = {
             "task": task_name,
             "created_at": datetime.now().isoformat(),
-            "run_dir": run_dir,
+            "run_dir": run_dir
         }
         self._write_summary()
 
@@ -161,6 +164,25 @@ class ExperimentLogger:
             return
         with open(self.run_paths.summary_json, "w", encoding="utf-8") as f:
             json.dump(self._summary, f, indent=2, ensure_ascii=False)
+
+    def generate_plots(self) -> None:
+        """
+        Automatic plotting after training:
+          runs/<task>/<timestamp>/plots/*.png
+        """
+        if not self.enabled or self.run_paths is None:
+            return
+
+        train_csv = self.run_paths.train_csv
+        if not os.path.isfile(train_csv):
+            return
+
+        plots_dir = os.path.join(self.run_paths.run_dir, "plots")
+        try:
+            plot_losses_from_csv(train_csv, plots_dir)
+        except Exception:
+            # non bloccare mai la run se il plotting fallisce
+            pass
 
     def close(self) -> None:
         if self._train_csv_f:

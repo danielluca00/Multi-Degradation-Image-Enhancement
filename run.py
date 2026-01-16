@@ -9,6 +9,8 @@ def main(config):
     set_seed_and_cudnn()
 
     logger = ExperimentLogger(config)
+    if logger.run_dir():
+        print(f"[LOGGER] Run dir: {logger.run_dir()}")
 
     phase = config["phase"]
     dataset = define_dataset(config[phase]["dataset"])
@@ -24,6 +26,8 @@ def main(config):
 
     if phase == "train":
         model.train()
+        # ✅ auto-generate plots at the end of training
+        logger.generate_plots()
     else:
         model.test()
 
