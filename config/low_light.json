@@ -67,7 +67,7 @@
     "save_config_copy": true,
 
     "train": {
-      "log_every_n_batches": 50,
+      "log_every_n_batches": 0,
       "save_csv": true,
       "save_jsonl": true
     },
@@ -91,8 +91,8 @@
     "dataset": {
       "name": ["data.dataset", "PairedDataset"],
       "args": {
-        "input_root": "../LOLdataset/train/low",
-        "target_root": "../LOLdataset/train/high",
+        "input_root": "../low_light/train/degraded",
+        "target_root": "../low_light/train/clean",
         "pairing_mode": "filename",
         "transform": {
           "backend": "albumentations",
@@ -127,8 +127,8 @@
     "dataset": {
       "name": ["data.dataset", "PairedDataset"],
       "args": {
-        "input_root": "../LOLdataset/test/low",
-        "target_root": "../LOLdataset/test/high",
+        "input_root": "../low_light/test/degraded",
+        "target_root": "../low_light/test/clean",
         "pairing_mode": "filename",
         "transform": {
           "backend": "albumentations",

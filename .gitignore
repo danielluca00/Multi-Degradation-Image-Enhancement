@@ -9,6 +9,10 @@ runs/
 output_images/
 saved_models/
 
+# Generated datasets (local, heavy)
+clean_images/
+paired_datasets/
+
 # =========================
 # Python bytecode / cache
 # =========================
@@ -81,7 +85,7 @@ pyrightconfig.json
 .env
 
 # =========================
-# Optional: local dataset folders (uncomment if inside repo)
+# Optional: external datasets (kept outside repo)
 # =========================
 # LOLdataset/
 # data_raw/
