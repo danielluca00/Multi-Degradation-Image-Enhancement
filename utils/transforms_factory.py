@@ -59,6 +59,8 @@ def _albu_build(ops, is_paired: bool):
             albu_ops.append(A.HorizontalFlip(p=args.get("p", 0.5)))
         elif name == "VerticalFlip":
             albu_ops.append(A.VerticalFlip(p=args.get("p", 0.5)))
+        elif name == "RandomRotate90":
+            albu_ops.append(A.RandomRotate90(p=args.get("p", 0.5)))
         elif name == "RandomBrightnessContrast":
             albu_ops.append(A.RandomBrightnessContrast(**args))
         elif name == "GaussNoise":
