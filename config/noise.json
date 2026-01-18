@@ -1,6 +1,6 @@
 {
-  "name": "jpeg",
-  "task": "jpeg",
+  "name": "noise",
+  "task": "noise",
 
   "model": {
     "which_model": {
@@ -18,10 +18,8 @@
   "loss": {
     "enabled": true,
     "terms": [
-      { "name": "l1", "weight": 1.0 },
-      { "name": "vgg_perceptual", "weight": 0.25, "args": { "layers": 20 } },
-      { "name": "ssim", "weight": 0.5 },
-      { "name": "lpips", "weight": 0.5, "args": { "net": "alex" } }
+      { "name": "charbonnier", "weight": 1.0, "args": { "eps": 1e-3 } },
+      { "name": "ssim", "weight": 0.5 }
     ]
   },
 
@@ -42,14 +40,13 @@
   "post_processing": {
     "enabled": false,
     "ops": [
-      { "name": "enhance_contrast", "args": { "contrast_factor": 1.03 } },
-      { "name": "enhance_color", "args": { "saturation_factor": 1.55 } }
+      { "name": "soft_denoise", "args": { "sigma": 0.15 } }
     ]
   },
 
   "save_outputs": {
     "enabled": true,
-    "output_dir": "outputs/jpeg/",
+    "output_dir": "outputs/noise/",
     "max_images": 200,
     "format": "png",
 
@@ -90,8 +87,8 @@
     "dataset": {
       "name": ["data.dataset", "PairedDataset"],
       "args": {
-        "input_root": "../jpeg/train/degraded",
-        "target_root": "../jpeg/train/clean",
+        "input_root": "../noise/train/degraded",
+        "target_root": "../noise/train/clean",
         "pairing_mode": "filename",
         "transform": {
           "backend": "albumentations",
@@ -116,7 +113,7 @@
     },
 
     "model_path": "weights/",
-    "model_name": "CDAN_jpeg.pt"
+    "model_name": "CDAN_noise.pt"
   },
 
   "test": {
@@ -125,8 +122,8 @@
     "dataset": {
       "name": ["data.dataset", "PairedDataset"],
       "args": {
-        "input_root": "../jpeg/test/degraded",
-        "target_root": "../jpeg/test/clean",
+        "input_root": "../noise/test/degraded",
+        "target_root": "../noise/test/clean",
         "pairing_mode": "filename",
         "transform": {
           "backend": "albumentations",
@@ -149,7 +146,7 @@
     },
 
     "model_path": "weights/",
-    "model_name": "CDAN_jpeg.pt",
-    "output_images_path": "outputs/jpeg/"
+    "model_name": "CDAN_noise.pt",
+    "output_images_path": "outputs/noise/"
   }
 }

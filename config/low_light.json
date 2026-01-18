@@ -96,12 +96,12 @@
         "transform": {
           "backend": "albumentations",
           "ops": [
-            { "name": "Resize", "args": { "height": 256, "width": 384 } },
             { "name": "HorizontalFlip", "args": { "p": 0.5 } },
             { "name": "VerticalFlip", "args": { "p": 0.15 } },
             { "name": "RandomRotate90", "args": { "p": 0.1 } },
             { "name": "RandomGamma", "args": { "gamma_limit": [70, 130], "p": 0.2 } },
             { "name": "RandomBrightnessContrast", "args": { "brightness_limit": 0.1, "contrast_limit": 0.1, "p": 0.25 }},
+            { "name": "Resize", "args": { "height": 256, "width": 384 } },
             { "name": "Normalize", "args": { "mean": [0.0, 0.0, 0.0], "std": [1.0, 1.0, 1.0] } },
             { "name": "ToTensorV2", "args": {} }
           ]
