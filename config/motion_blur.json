@@ -19,7 +19,8 @@
     "enabled": true,
     "terms": [
       { "name": "charbonnier", "weight": 1.0, "args": { "eps": 1e-3 } },
-      { "name": "ssim", "weight": 0.5 }
+      { "name": "ssim", "weight": 0.6 },
+      { "name": "vgg_perceptual", "weight": 0.05, "args": { "layers": 20 } }
     ]
   },
 
