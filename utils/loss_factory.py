@@ -68,6 +68,41 @@ class _VGGPerceptual(nn.Module):
         return self.vgg(x)
 
 
+def _sobel_kernels(device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """
+    Returns Sobel kernels of shape [2, 1, 3, 3] for x and y gradients.
+    """
+    kx = torch.tensor(
+        [[-1.0, 0.0, 1.0],
+         [-2.0, 0.0, 2.0],
+         [-1.0, 0.0, 1.0]],
+        device=device, dtype=dtype
+    )
+    ky = torch.tensor(
+        [[-1.0, -2.0, -1.0],
+         [0.0,  0.0,  0.0],
+         [1.0,  2.0,  1.0]],
+        device=device, dtype=dtype
+    )
+    return torch.stack([kx, ky], dim=0).unsqueeze(1)  # [2,1,3,3]
+
+
+def _image_gradients_sobel(x: torch.Tensor) -> torch.Tensor:
+    """
+    Compute Sobel gradients for a batch of images.
+    Input:  x [B,C,H,W] in [0,1]
+    Output: grads [B,C,2,H,W] (2 = dx, dy)
+    """
+    b, c, h, w = x.shape
+    kernels = _sobel_kernels(x.device, x.dtype)  # [2,1,3,3]
+    # apply per-channel using groups
+    kernels = kernels.repeat(c, 1, 1, 1)  # [2*C,1,3,3]
+    x_ = x.view(b * c, 1, h, w)
+    g = F.conv2d(x_, kernels, padding=1)  # [B*C, 2, H, W]
+    g = g.view(b, c, 2, h, w)
+    return g
+
+
 def build_loss_pipeline(loss_cfg: Optional[Dict[str, Any]], device: str) -> LossPipeline:
     """
     loss_cfg example:
@@ -77,7 +112,8 @@ def build_loss_pipeline(loss_cfg: Optional[Dict[str, Any]], device: str) -> Loss
         {"name": "mse", "weight": 1.0},
         {"name": "vgg_perceptual", "weight": 0.25, "args": {"layers": 20}},
         {"name": "ssim", "weight": 0.5},
-        {"name": "lpips", "weight": 0.5, "args": {"net": "alex"}}
+        {"name": "lpips", "weight": 0.5, "args": {"net": "alex"}},
+        {"name": "gradient_l1", "weight": 0.1, "args": {"to_gray": false}}
       ]
     }
     """
@@ -162,6 +198,36 @@ def build_loss_pipeline(loss_cfg: Optional[Dict[str, Any]], device: str) -> Loss
                     raise ValueError("lpips loss requires targets (paired dataset).")
                 return lpips_metric(outputs, targets)
             built_terms.append(LossTerm(name="lpips", weight=weight, mode=mode, fn=_fn))
+
+        elif name == "gradient_l1":
+            # args:
+            #  - to_gray: bool (default False)  -> compute gradients on luminance only
+            to_gray = bool(args.get("to_gray", False))
+
+            def _to_gray(x: torch.Tensor) -> torch.Tensor:
+                # x [B,3,H,W] -> [B,1,H,W]
+                if x.shape[1] != 3:
+                    return x.mean(dim=1, keepdim=True)
+                r, g, b = x[:, 0:1], x[:, 1:2], x[:, 2:3]
+                return 0.2989 * r + 0.5870 * g + 0.1140 * b
+
+            def _fn(outputs, targets, inputs=None):
+                if targets is None:
+                    raise ValueError("gradient_l1 loss requires targets (paired dataset).")
+
+                x = outputs
+                y = targets
+                if to_gray:
+                    x = _to_gray(x)
+                    y = _to_gray(y)
+
+                gx = _image_gradients_sobel(x)  # [B,C,2,H,W]
+                gy = _image_gradients_sobel(y)
+
+                # L1 on gradients
+                return torch.mean(torch.abs(gx - gy))
+
+            built_terms.append(LossTerm(name="gradient_l1", weight=weight, mode=mode, fn=_fn))
 
         else:
             raise ValueError(f"Unknown loss term: {name}")

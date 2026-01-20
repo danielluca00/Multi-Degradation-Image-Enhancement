@@ -20,7 +20,8 @@
     "terms": [
       { "name": "charbonnier", "weight": 1.0, "args": { "eps": 1e-3 } },
       { "name": "ssim", "weight": 0.5 },
-      { "name": "vgg_perceptual", "weight": 0.03, "args": { "layers": 20 } }
+      { "name": "vgg_perceptual", "weight": 0.03, "args": { "layers": 20 } },
+      { "name": "gradient_l1", "weight": 0.1, "args": { "to_gray": true } }
     ]
   },
 
