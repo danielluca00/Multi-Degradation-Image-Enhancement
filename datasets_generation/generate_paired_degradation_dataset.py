@@ -17,7 +17,7 @@ from tqdm import tqdm
 # CONFIG
 # =========================================================
 CLEAN_DIR = Path("clean_images")
-OUTPUT_ROOT = Path("paired_datasets")
+OUTPUT_ROOT = Path("paired_datasets_v2")
 
 # target final size (H, W)
 TARGET_SIZE = (256, 384)
@@ -29,36 +29,39 @@ SEED = 42
 # output image format
 OUTPUT_EXT = ".png"
 
-# padding color (RGB) - chosen: neutral gray
+# padding color (RGB)
 PADDING_COLOR_RGB = (128, 128, 128)
 
 # ---------------------------
-# IMPORTANT: what to generate
+# WHAT TO GENERATE
 # ---------------------------
-# If True, the script generates ONLY the pixelation curriculum datasets (easy/hard).
-# This is the safest choice when you already generated all other datasets and
-# you only want to regenerate pixelation without touching anything else.
-PIXELATION_ONLY = True
+# If True: generate everything (standard degradations + curriculum ones below).
+GENERATE_ALL = False
+
+# If GENERATE_ALL=False, generate ONLY the datasets listed here.
+# Examples:
+#   GENERATE = ["high_light"]
+#   GENERATE = ["pixelation_easy", "pixelation_hard"]
+#   GENERATE = ["high_light", "low_contrast", "color_distortion"]
+GENERATE = ["high_light"]
 
 # If True, delete existing output folders for the things you generate (overwrite).
-# If False, script will skip generating a dataset folder if it already exists.
+# If False, skip dataset folder if it already exists.
 OVERWRITE_EXISTING = True
 
-# Pixelation curriculum presets:
-# - pixelation_easy: lighter pixelation factors
-# - pixelation_hard: heavier pixelation factors
+# Pixelation curriculum presets
 PIXELATION_PRESETS = {
     "pixelation_easy": [4, 6, 8],
     "pixelation_hard": [10, 12, 16],
 }
 
-# If PIXELATION_ONLY = False, the script will also generate these standard degradations
+# Standard degradations list
 DEGRADATIONS = [
     "blur",
     "noise",
     "low_light",
     "jpeg",
-    "pixelation",      # standard mixed pixelation (optional if PIXELATION_ONLY=False)
+    "pixelation",      # standard mixed pixelation (optional)
     "motion_blur",
     "high_light",
     "low_contrast",
@@ -80,44 +83,26 @@ def resize_with_padding_rgb(
     target_hw: Tuple[int, int],
     pad_color_rgb: Tuple[int, int, int] = (128, 128, 128),
 ) -> np.ndarray:
-    """
-    Resize preserving aspect ratio, then pad to target size.
-
-    Args:
-        img: uint8 RGB (H,W,3)
-        target_hw: (H, W)
-        pad_color_rgb: (R,G,B) padding color
-
-    Returns:
-        uint8 RGB image of shape (target_h, target_w, 3)
-    """
     target_h, target_w = target_hw
     h, w = img.shape[:2]
     if h == 0 or w == 0:
         raise ValueError("Invalid image with zero dimension.")
 
-    # scale to fit inside target
     scale = min(target_w / w, target_h / h)
     new_w = max(1, int(round(w * scale)))
     new_h = max(1, int(round(h * scale)))
 
-    # resize
     resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-    # create canvas
     canvas = np.full((target_h, target_w, 3), pad_color_rgb, dtype=np.uint8)
-
-    # center placement
     x0 = (target_w - new_w) // 2
     y0 = (target_h - new_h) // 2
     canvas[y0 : y0 + new_h, x0 : x0 + new_w] = resized
-
     return canvas
 
 
 # =========================================================
-# Degradation functions
-# (all operate on uint8 RGB images)
+# Degradation functions (uint8 RGB -> uint8 RGB)
 # =========================================================
 def blur(img: np.ndarray) -> np.ndarray:
     k = random.choice([3, 5, 7, 9])
@@ -148,12 +133,7 @@ def jpeg(img: np.ndarray) -> np.ndarray:
 
 
 def pixelation(img: np.ndarray, factor: int) -> np.ndarray:
-    """
-    Pixelate image by downsampling by 'factor' then upsampling back.
-    factor >= 2. Larger factor => stronger pixelation.
-    """
     h, w = img.shape[:2]
-    # protect against too aggressive factors on small images
     max_factor = max(2, min(h, w) // 2)
     factor = max(2, min(int(factor), max_factor))
 
@@ -165,10 +145,6 @@ def pixelation(img: np.ndarray, factor: int) -> np.ndarray:
 
 
 def pixelation_mixed(img: np.ndarray) -> np.ndarray:
-    """
-    Standard mixed pixelation used in the original script:
-    random factor in [4,16].
-    """
     f = random.randint(4, 16)
     return pixelation(img, factor=f)
 
@@ -207,7 +183,7 @@ DEGRADATION_FUNCS = {
     "noise": noise,
     "low_light": low_light,
     "jpeg": jpeg,
-    "pixelation": pixelation_mixed,  # standard mixed (only if you want it)
+    "pixelation": pixelation_mixed,
     "motion_blur": motion_blur,
     "high_light": high_light,
     "low_contrast": low_contrast,
@@ -244,26 +220,18 @@ def load_or_create_split(files: List[str]) -> Dict[str, List[str]]:
     if split_path.exists():
         return json.loads(split_path.read_text(encoding="utf-8"))
 
-    # deterministic split given SEED
     rnd = random.Random(SEED)
-    files = files[:]  # copy
+    files = files[:]
     rnd.shuffle(files)
 
     n_test = int(len(files) * TEST_RATIO)
-    split = {
-        "train": files[n_test:],
-        "test": files[:n_test],
-    }
+    split = {"train": files[n_test:], "test": files[:n_test]}
 
     split_path.write_text(json.dumps(split, indent=2), encoding="utf-8")
     return split
 
 
 def stable_index_from_name(name: str, modulo: int) -> int:
-    """
-    Stable (cross-run, cross-machine) index based on filename.
-    We do NOT use Python's built-in hash() because it's salted per process.
-    """
     if modulo <= 0:
         return 0
     digest = hashlib.md5(name.encode("utf-8")).hexdigest()
@@ -271,11 +239,6 @@ def stable_index_from_name(name: str, modulo: int) -> int:
 
 
 def maybe_prepare_output_dir(base: Path) -> bool:
-    """
-    Returns True if we should generate into this base folder.
-    - If OVERWRITE_EXISTING: delete and recreate
-    - Else: skip if exists
-    """
     if base.exists():
         if OVERWRITE_EXISTING:
             shutil.rmtree(base)
@@ -289,11 +252,7 @@ def maybe_prepare_output_dir(base: Path) -> bool:
 # =========================================================
 # Generation routines
 # =========================================================
-def generate_standard_degradation(
-    degrad: str,
-    fn,
-    split: Dict[str, List[str]],
-) -> None:
+def generate_standard_degradation(degrad: str, fn, split: Dict[str, List[str]]) -> None:
     base = OUTPUT_ROOT / degrad
     if not maybe_prepare_output_dir(base):
         return
@@ -318,9 +277,7 @@ def generate_standard_degradation(
     print(f"[OK] Dataset '{degrad}' creato in {base.resolve()}")
 
 
-def generate_pixelation_curriculum(
-    split: Dict[str, List[str]],
-) -> None:
+def generate_pixelation_curriculum(split: Dict[str, List[str]]) -> None:
     for dataset_name, factors in PIXELATION_PRESETS.items():
         base = OUTPUT_ROOT / dataset_name
         if not maybe_prepare_output_dir(base):
@@ -337,7 +294,6 @@ def generate_pixelation_curriculum(
                 except Exception:
                     continue
 
-                # Deterministic factor choice per image
                 idx = stable_index_from_name(name, len(factors))
                 factor = factors[idx]
 
@@ -361,31 +317,38 @@ def main():
     names = [p.name for p in clean_imgs]
     split = load_or_create_split(names)
 
-    if PIXELATION_ONLY:
-        # Only regenerate pixelation curriculum datasets (easy/hard),
-        # keeping all other datasets untouched.
-        generate_pixelation_curriculum(split)
-        print("\n[Done] Generated ONLY pixelation curriculum datasets.")
+    # Decide what to generate
+    to_generate: List[str]
+    if GENERATE_ALL:
+        # everything: standard + curriculum
+        to_generate = DEGRADATIONS + list(PIXELATION_PRESETS.keys())
     else:
-        # Generate all standard degradations (+ curriculum if you want)
-        for degrad in DEGRADATIONS:
-            if degrad not in DEGRADATION_FUNCS:
-                raise ValueError(
-                    f"Unknown degradation '{degrad}'. Available: {list(DEGRADATION_FUNCS.keys())}"
-                )
-            fn = DEGRADATION_FUNCS[degrad]
-            generate_standard_degradation(degrad, fn, split)
+        to_generate = GENERATE[:]
 
-        # Optional: also generate curriculum versions in addition to standard mixed pixelation
-        generate_pixelation_curriculum(split)
-
-        print("\n[Done] Generated standard degradations and pixelation curriculum datasets.")
+    # Generate requested datasets
+    for item in to_generate:
+        if item in PIXELATION_PRESETS:
+            # curriculum pixelation dataset(s)
+            # (generate function handles both; here we still allow selecting just one preset)
+            # We'll temporarily filter presets to only the one requested if needed.
+            original = dict(PIXELATION_PRESETS)
+            try:
+                # keep only requested preset
+                only = {item: PIXELATION_PRESETS[item]}
+                globals()["PIXELATION_PRESETS"] = only  # simple + explicit
+                generate_pixelation_curriculum(split)
+            finally:
+                globals()["PIXELATION_PRESETS"] = original
+        else:
+            # standard degradation
+            if item not in DEGRADATION_FUNCS:
+                raise ValueError(f"Unknown dataset '{item}'. Available: {list(DEGRADATION_FUNCS.keys()) + list(PIXELATION_PRESETS.keys())}")
+            generate_standard_degradation(item, DEGRADATION_FUNCS[item], split)
 
     print(f"\nSplit usato: seed={SEED}, test_ratio={TEST_RATIO}")
     print(f"Resize target: {TARGET_SIZE[0]}x{TARGET_SIZE[1]} (HxW), padding RGB={PADDING_COLOR_RGB}")
-    print(f"PIXELATION_ONLY={PIXELATION_ONLY} | OVERWRITE_EXISTING={OVERWRITE_EXISTING}")
-    if PIXELATION_PRESETS:
-        print(f"Pixelation presets: {PIXELATION_PRESETS}")
+    print(f"GENERATE_ALL={GENERATE_ALL} | GENERATE={GENERATE} | OVERWRITE_EXISTING={OVERWRITE_EXISTING}")
+    print(f"Pixelation presets: {PIXELATION_PRESETS}")
 
 
 if __name__ == "__main__":

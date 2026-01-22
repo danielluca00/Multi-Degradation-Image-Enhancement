@@ -12,6 +12,7 @@ saved_models/
 # Generated datasets (local, heavy)
 clean_images/
 paired_datasets/
+paired_datasets_v2/
 
 # =========================
 # Python bytecode / cache
