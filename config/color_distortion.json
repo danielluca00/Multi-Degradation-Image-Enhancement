@@ -1,0 +1,150 @@
+{
+  "name": "color_distortion",
+  "task": "color_distortion",
+
+  "model": {
+    "which_model": {
+      "name": ["models.model", "Model"],
+      "args": {}
+    },
+    "networks": [
+      {
+        "name": ["models.cdan", "CDAN"],
+        "args": {}
+      }
+    ]
+  },
+
+  "loss": {
+    "enabled": true,
+    "terms": [
+      { "name": "charbonnier", "weight": 1.0, "args": { "eps": 1e-3 } },
+      { "name": "ssim", "weight": 0.4 }
+    ]
+  },
+
+  "metrics": {
+    "enabled": true,
+    "items": [
+      { "name": "psnr" },
+      { "name": "ssim" },
+      { "name": "lpips", "args": { "net": "alex" } }
+    ]
+  },
+
+  "evaluation": {
+    "raw": true,
+    "postprocessed": false
+  },
+
+  "post_processing": {
+    "enabled": false,
+    "ops": []
+  },
+
+  "save_outputs": {
+    "enabled": true,
+    "output_dir": "outputs/color_distortion/",
+    "max_images": 200,
+    "format": "png",
+
+    "save_raw": true,
+    "save_postprocessed": false,
+
+    "raw_prefix": "raw_",
+    "post_prefix": "pp_"
+  },
+
+  "logging": {
+    "enabled": true,
+    "root_dir": "runs",
+    "save_config_copy": true,
+
+    "train": {
+      "log_every_n_batches": 0,
+      "save_csv": true,
+      "save_jsonl": true
+    },
+
+    "test": {
+      "save_csv": true,
+      "save_jsonl": true
+    },
+
+    "checkpoints": {
+      "enabled": false,
+      "every_n_epochs": 10
+    }
+  },
+
+  "train": {
+    "device": "cuda",
+    "n_epoch": 80,
+    "lr": 0.001,
+
+    "dataset": {
+      "name": ["data.dataset", "PairedDataset"],
+      "args": {
+        "input_root": "../color_distortion/train/degraded",
+        "target_root": "../color_distortion/train/clean",
+        "pairing_mode": "filename",
+        "transform": {
+          "backend": "albumentations",
+          "ops": [
+            { "name": "HorizontalFlip", "args": { "p": 0.5 } },
+            { "name": "VerticalFlip", "args": { "p": 0.2 } },
+            { "name": "RandomRotate90", "args": { "p": 0.15 } },
+            { "name": "Resize", "args": { "height": 256, "width": 384 } },
+            { "name": "Normalize", "args": { "mean": [0.0, 0.0, 0.0], "std": [1.0, 1.0, 1.0] } },
+            { "name": "ToTensorV2", "args": {} }
+          ]
+        }
+      }
+    },
+
+    "dataloader": {
+      "args": {
+        "batch_size": 16,
+        "shuffle": true,
+        "num_workers": 4
+      }
+    },
+
+    "model_path": "weights/",
+    "model_name": "CDAN_color_distortion.pt"
+  },
+
+  "test": {
+    "device": "cuda",
+
+    "dataset": {
+      "name": ["data.dataset", "PairedDataset"],
+      "args": {
+        "input_root": "../color_distortion/test/degraded",
+        "target_root": "../color_distortion/test/clean",
+        "pairing_mode": "filename",
+        "transform": {
+          "backend": "albumentations",
+          "ops": [
+            { "name": "Resize", "args": { "height": 256, "width": 384 } },
+            { "name": "Normalize", "args": { "mean": [0.0, 0.0, 0.0], "std": [1.0, 1.0, 1.0] } },
+            { "name": "ToTensorV2", "args": {} }
+          ]
+        }
+      },
+      "is_paired": true
+    },
+
+    "dataloader": {
+      "args": {
+        "batch_size": 16,
+        "shuffle": false,
+        "num_workers": 4
+      }
+    },
+
+    "model_path": "weights/",
+    "model_name": "CDAN_color_distortion.pt",
+    "output_images_path": "outputs/color_distortion/"
+  }
+}
