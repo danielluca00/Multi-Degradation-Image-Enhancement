@@ -13,6 +13,7 @@ saved_models/
 clean_images/
 paired_datasets/
 paired_datasets_v2/
+classifier_dataset/
 
 # =========================
 # Python bytecode / cache
