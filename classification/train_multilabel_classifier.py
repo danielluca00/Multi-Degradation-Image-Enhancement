@@ -95,7 +95,8 @@ class MultiLabelSeverityDataset(Dataset):
 
     def __getitem__(self, idx: int):
         r = self.rows[idx]
-        img_path = self.root / r["file"]
+        rel = Path(str(r["file"]).replace("\\", "/"))  # fix Windows → Linux
+        img_path = self.root / rel
         img = Image.open(img_path).convert("RGB")
 
         if self.tf is not None:

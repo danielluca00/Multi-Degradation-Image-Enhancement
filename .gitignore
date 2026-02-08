@@ -4,6 +4,7 @@
 outputs/
 weights/
 runs/
+runs_classifier/
 
 # Legacy / optional output folders
 output_images/
