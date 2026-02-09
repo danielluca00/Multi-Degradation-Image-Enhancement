@@ -43,6 +43,10 @@ PIN_MEMORY = True
 # threshold tuning
 THRESH_GRID = [float(x) for x in np.linspace(0.05, 0.95, 19)]  # 0.05..0.95 step 0.05
 
+# ImageNet normalization for pretrained backbones
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+
 
 # =========================================================
 # Logging (terminal + file)
@@ -88,7 +92,8 @@ class MultiLabelSeverityDataset(Dataset):
 
     def __getitem__(self, idx: int):
         r = self.rows[idx]
-        rel = Path(str(r["file"]).replace("\\", "/"))  # fix Windows → Linux
+        # Keep it robust across Windows/Linux path separators in jsonl
+        rel = Path(str(r["file"]).replace("\\", "/"))
         img_path = self.root / rel
         img = Image.open(img_path).convert("RGB")
 
@@ -366,10 +371,10 @@ def run_epoch(
         all_s_true.append(s_np)
         all_s_pred.append(s_pred_np)
 
-    all_p = np.concatenate(all_p, axis=0)
-    all_y = np.concatenate(all_y, axis=0)
-    all_s_true = np.concatenate(all_s_true, axis=0)
-    all_s_pred = np.concatenate(all_s_pred, axis=0)
+    all_p = np.concatenate(all_p, axis=0) if all_p else np.zeros((0, len(classes)), dtype=np.float32)
+    all_y = np.concatenate(all_y, axis=0) if all_y else np.zeros((0, len(classes)), dtype=np.float32)
+    all_s_true = np.concatenate(all_s_true, axis=0) if all_s_true else np.zeros((0, len(classes)), dtype=np.float32)
+    all_s_pred = np.concatenate(all_s_pred, axis=0) if all_s_pred else np.zeros((0, len(classes)), dtype=np.float32)
 
     y_hat = apply_thresholds(all_p, thresholds)
 
@@ -428,6 +433,9 @@ def parse_args():
     p.add_argument("--lr", type=float, default=LR)
     p.add_argument("--patience", type=int, default=PATIENCE)
     p.add_argument("--num_workers", type=int, default=NUM_WORKERS)
+
+    # NEW: allow disabling normalization (for ablations)
+    p.add_argument("--no_normalize", action="store_true", help="Disable ImageNet normalization (NOT recommended for pretrained backbones).")
     return p.parse_args()
 
 
@@ -467,17 +475,28 @@ def main():
     print("Classes:", classes)
     print("Num classes:", num_classes)
 
-    # Transforms
+    # -----------------------------------------------------
+    # Transforms (NOW WITH ImageNet normalization by default)
+    # -----------------------------------------------------
+    normalize_tf = []
+    if not args.no_normalize:
+        normalize_tf = [transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)]
+        print(f"✅ Using ImageNet normalization: mean={IMAGENET_MEAN} std={IMAGENET_STD}")
+    else:
+        print("⚠️  Normalization disabled (--no_normalize).")
+
     train_tf = transforms.Compose([
         transforms.Resize((256, 384)),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomVerticalFlip(p=0.15),
         transforms.RandomRotation(5),
         transforms.ToTensor(),
+        *normalize_tf,
     ])
     eval_tf = transforms.Compose([
         transforms.Resize((256, 384)),
         transforms.ToTensor(),
+        *normalize_tf,
     ])
 
     # Datasets + loaders
@@ -577,6 +596,9 @@ def main():
                         "pos_weight": pos_weight.detach().cpu().numpy().tolist(),
                         "epoch": epoch,
                         "val_f1_micro": best_score,
+                        "normalize": (not args.no_normalize),
+                        "imagenet_mean": IMAGENET_MEAN,
+                        "imagenet_std": IMAGENET_STD,
                     },
                     best_path,
                 )
@@ -611,16 +633,17 @@ def main():
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
-    # -------------------------
-    # TUNE THRESHOLDS on VAL
-    # -------------------------
+    # thresholds used for final test
     tuned_thresholds: List[float] = thresholds[:]  # fallback
     tune_report = None
 
+    # -------------------------
+    # TUNE THRESHOLDS on VAL
+    # -------------------------
     if args.tune_thresh:
         print("\n===== THRESHOLD TUNING (VAL) =====")
         grid = [float(x) for x in np.linspace(args.th_min, args.th_max, args.th_steps)]
-        probs_val, y_val, s_val, s_pred_val = collect_outputs(model, val_loader)
+        probs_val, y_val, _, _ = collect_outputs(model, val_loader)
 
         tune_report = tune_thresholds_per_class_for_f1(
             probs=probs_val,
@@ -629,7 +652,6 @@ def main():
             grid=grid,
         )
 
-        # extract per-class thresholds in correct order
         tuned_thresholds = [tune_report["thresholds"][c] for c in classes]
 
         (run_dir / "thresholds_val.json").write_text(json.dumps(tune_report, indent=2), encoding="utf-8")
@@ -661,6 +683,11 @@ def main():
             "pos_weight": ckpt.get("pos_weight", None),
             "best_val_f1_micro_default_thresh": float(ckpt.get("val_f1_micro", -1.0)),
             "best_epoch": int(ckpt.get("epoch", -1)),
+            "normalization": {
+                "enabled": (not args.no_normalize),
+                "mean": IMAGENET_MEAN,
+                "std": IMAGENET_STD,
+            },
             "test": {
                 "loss": te["loss"],
                 "loss_cls": te["loss_cls"],
