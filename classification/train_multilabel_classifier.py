@@ -85,7 +85,7 @@ class MultiLabelSeverityDataset(Dataset):
       img: Tensor
       y:   [C] float32 in {0,1}
       s:   [C] float32 in [0,1]
-      rel_path: Path (relative) used for diagnostics export
+      rel_path: str (relative) used for diagnostics export
     """
     def __init__(self, root: Path, split: str, classes: List[str], tf=None):
         self.root = root
@@ -221,7 +221,6 @@ def collect_outputs(
     all_paths: List[str] = []
 
     for batch in loader:
-        # support both old and new dataset signature
         if len(batch) == 3:
             x, y, s = batch
             rel_paths = [""] * x.shape[0]
@@ -309,14 +308,9 @@ def tune_thresholds_per_class_for_f1(
 # Diagnostics: PR curves, AP, score hist, FP/FN export
 # =========================================================
 def _precision_recall_curve_binary(y_true: np.ndarray, y_score: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Pure numpy PR curve for binary classification.
-    Returns: precision, recall, thresholds (same length as precision/recall - 1 typically).
-    """
     y_true = y_true.astype(np.int32)
     y_score = y_score.astype(np.float64)
 
-    # sort by score desc
     order = np.argsort(-y_score)
     y_true = y_true[order]
     y_score = y_score[order]
@@ -328,10 +322,8 @@ def _precision_recall_curve_binary(y_true: np.ndarray, y_score: np.ndarray) -> T
     precision = tp / (tp + fp + eps)
     recall = tp / (tp[-1] + eps) if tp.size > 0 else np.array([], dtype=np.float64)
 
-    # thresholds correspond to y_score
     thresholds = y_score
 
-    # prepend (recall=0, precision=1) for nicer plotting
     precision = np.concatenate([np.array([1.0]), precision])
     recall = np.concatenate([np.array([0.0]), recall])
 
@@ -339,13 +331,8 @@ def _precision_recall_curve_binary(y_true: np.ndarray, y_score: np.ndarray) -> T
 
 
 def _average_precision_from_pr(precision: np.ndarray, recall: np.ndarray) -> float:
-    """
-    AP = area under PR curve using step-wise integration over recall.
-    """
     if precision.size == 0 or recall.size == 0:
         return float("nan")
-    # ensure recall is non-decreasing
-    # integrate precision w.r.t recall (rectangle method)
     dr = np.diff(recall)
     ap = float(np.sum(precision[1:] * dr))
     return ap
@@ -356,9 +343,6 @@ def _ensure_dir(p: Path):
 
 
 def _save_pr_plot(out_path: Path, curves: Dict[str, Tuple[np.ndarray, np.ndarray, float]]):
-    """
-    curves[class] = (precision, recall, ap)
-    """
     plt.figure()
     for cls, (prec, rec, ap) in curves.items():
         plt.plot(rec, prec, label=f"{cls} (AP={ap:.3f})")
@@ -384,6 +368,42 @@ def _save_score_hist(out_path: Path, pos_scores: np.ndarray, neg_scores: np.ndar
     plt.close()
 
 
+def compute_cooccurrence(
+    indices: np.ndarray,
+    y_true: np.ndarray,
+    y_hat: np.ndarray,
+    classes: List[str],
+    focus_ci: int,
+) -> Dict:
+    """
+    For a set of sample indices (e.g., FP or FN of one class),
+    count how often other classes are ON in:
+      - ground truth (y_true)
+      - prediction (y_hat)
+    """
+    true_counts = {c: 0 for c in classes}
+    pred_counts = {c: 0 for c in classes}
+
+    for idx in indices.tolist():
+        for ci, cls in enumerate(classes):
+            if ci == focus_ci:
+                continue
+            if int(y_true[idx, ci]) == 1:
+                true_counts[cls] += 1
+            if int(y_hat[idx, ci]) == 1:
+                pred_counts[cls] += 1
+
+    # drop the focus class from outputs (optional, but keeps it clean)
+    true_counts.pop(classes[focus_ci], None)
+    pred_counts.pop(classes[focus_ci], None)
+
+    return {
+        "num_samples": int(len(indices)),
+        "true_on_counts": true_counts,
+        "pred_on_counts": pred_counts,
+    }
+
+
 def run_diagnostics(
     dataset_root: Path,
     run_dir: Path,
@@ -399,9 +419,11 @@ def run_diagnostics(
     Writes diagnostics to:
       run_dir/diagnostics/{split_name}/
         - pr_curves.png
-        - ap_per_class.json
+        - ap_pr_summary.json
         - score_hists/{class}.png
         - errors/{class}/FP/ , errors/{class}/FN/ + manifest.json
+        - errors/{class}/cooccurrence_FP.json
+        - errors/{class}/cooccurrence_FN.json
     """
     diag_root = run_dir / "diagnostics" / split_name
     _ensure_dir(diag_root)
@@ -439,7 +461,7 @@ def run_diagnostics(
             title=f"{split_name} score distribution: {cls}",
         )
 
-        # FP/FN export
+        # FP/FN indices for this class
         fp_idx = np.where((y_hat[:, ci] == 1) & (y_true[:, ci] == 0))[0]
         fn_idx = np.where((y_hat[:, ci] == 0) & (y_true[:, ci] == 1))[0]
 
@@ -458,7 +480,52 @@ def run_diagnostics(
         _ensure_dir(fp_dir)
         _ensure_dir(fn_dir)
 
+        # ---------
+        # Co-occurrence exports (what other labels are ON on errors)
+        # ---------
+        co_fp = compute_cooccurrence(fp_take, y_true, y_hat, classes, focus_ci=ci)
+        co_fn = compute_cooccurrence(fn_take, y_true, y_hat, classes, focus_ci=ci)
+
+        (cls_err_root / "cooccurrence_FP.json").write_text(
+            json.dumps(
+                {
+                    "split": split_name,
+                    "focus_class": cls,
+                    "error_type": "FP",
+                    "threshold_used": float(tuned_thresholds[ci]),
+                    **co_fp,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (cls_err_root / "cooccurrence_FN.json").write_text(
+            json.dumps(
+                {
+                    "split": split_name,
+                    "focus_class": cls,
+                    "error_type": "FN",
+                    "threshold_used": float(tuned_thresholds[ci]),
+                    **co_fn,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
         manifest = {"class": cls, "threshold_used": float(tuned_thresholds[ci]), "FP": [], "FN": []}
+
+        def _sample_full_vectors(idx: int) -> Dict[str, Dict[str, float]]:
+            """
+            Returns dicts over ALL classes for a given sample:
+              - y_true_all: 0/1 per class
+              - y_pred_all: 0/1 per class
+              - prob_all:   probability per class
+            """
+            y_true_all = {c: int(y_true[idx, k]) for k, c in enumerate(classes)}
+            y_pred_all = {c: int(y_hat[idx, k]) for k, c in enumerate(classes)}
+            prob_all = {c: float(probs[idx, k]) for k, c in enumerate(classes)}
+            return {"y_true_all": y_true_all, "y_pred_all": y_pred_all, "prob_all": prob_all}
 
         def _copy_samples(idxs: np.ndarray, out_dir: Path, bucket: str):
             for j, idx in enumerate(idxs.tolist()):
@@ -471,14 +538,18 @@ def run_diagnostics(
                 dst = out_dir / f"{j:03d}__p{ps[idx]:.4f}__{Path(rel).name}"
                 try:
                     shutil.copy2(src, dst)
+
+                    full_vecs = _sample_full_vectors(idx)
+
                     manifest[bucket].append(
                         {
                             "rank": int(j),
                             "src_rel": rel,
                             "dst": str(dst.relative_to(diag_root)),
-                            "prob": float(ps[idx]),
-                            "y_true": int(y_true[idx, ci]),
-                            "y_pred": int(y_hat[idx, ci]),
+                            "prob_focus_class": float(ps[idx]),
+                            "y_true_focus_class": int(y_true[idx, ci]),
+                            "y_pred_focus_class": int(y_hat[idx, ci]),
+                            **full_vecs,
                         }
                     )
                 except Exception:
@@ -497,7 +568,6 @@ def run_diagnostics(
     macro_ap = float(np.mean(ap_values)) if ap_values else float("nan")
 
     # "micro AP" (pool all decisions)
-    # flatten all classes
     yt_flat = y_true.reshape(-1).astype(np.int32)
     ps_flat = probs.reshape(-1).astype(np.float64)
     if yt_flat.sum() > 0:
@@ -634,22 +704,18 @@ def parse_args():
     p.add_argument("--tune_thresh", action="store_true", help="Tune per-class thresholds on VAL after training (or from checkpoint).")
     p.add_argument("--test", action="store_true", help="Run FINAL TEST (after optionally tuning thresholds).")
 
-    # threshold tuning grid
     p.add_argument("--th_min", type=float, default=0.05)
     p.add_argument("--th_max", type=float, default=0.95)
     p.add_argument("--th_steps", type=int, default=19)
 
-    # override hyperparams (optional)
     p.add_argument("--epochs", type=int, default=NUM_EPOCHS)
     p.add_argument("--batch_size", type=int, default=BATCH_SIZE)
     p.add_argument("--lr", type=float, default=LR)
     p.add_argument("--patience", type=int, default=PATIENCE)
     p.add_argument("--num_workers", type=int, default=NUM_WORKERS)
 
-    # allow disabling normalization (for ablations)
     p.add_argument("--no_normalize", action="store_true", help="Disable ImageNet normalization (NOT recommended for pretrained backbones).")
 
-    # NEW: diagnostics
     p.add_argument("--diagnostics", action="store_true", help="Run PR/AP + FP/FN export on VAL and/or TEST (uses tuned thresholds if available).")
     p.add_argument("--diag_topk", type=int, default=24, help="Top-K FP and Top-K FN exported per class.")
     return p.parse_args()
@@ -689,7 +755,6 @@ def main():
     print("Classes:", classes)
     print("Num classes:", num_classes)
 
-    # transforms with ImageNet normalization by default
     normalize_tf = []
     if not args.no_normalize:
         normalize_tf = [transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)]
@@ -863,11 +928,9 @@ def main():
     # -------------------------
     # FINAL TEST
     # -------------------------
-    test_metrics = None
     if args.test:
         print("\n===== FINAL TEST =====")
         te = run_epoch(model, test_loader, None, bce_loss, huber_loss, train=False, classes=classes, thresholds=tuned_thresholds)
-        test_metrics = te
         print(
             f"Test  loss={te['loss']:.4f} (cls={te['loss_cls']:.4f}, sev={te['loss_sev']:.4f}) | "
             f"F1micro={te['f1_micro']:.4f} F1macro={te['f1_macro']:.4f} | sevMAE={te['sev_mae']:.4f}"
@@ -911,7 +974,7 @@ def main():
     # -------------------------
     if args.diagnostics:
         print("\n===== DIAGNOSTICS =====")
-        # VAL diagnostics
+
         probs_val, y_val, _sval, _spval, paths_val = collect_outputs(model, val_loader)
         run_diagnostics(
             dataset_root=dataset_root,
@@ -926,7 +989,6 @@ def main():
         )
         print("✅ Diagnostics saved for VAL:", (run_dir / "diagnostics" / "val").resolve())
 
-        # TEST diagnostics only if requested test or if you want anyway
         probs_te, y_te, _ste, _spte, paths_te = collect_outputs(model, test_loader)
         run_diagnostics(
             dataset_root=dataset_root,
